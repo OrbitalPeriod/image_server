@@ -7,7 +7,6 @@ use std::{error::Error, net::SocketAddr, path::PathBuf};
 
 mod api;
 pub mod database;
-mod transcoder;
 
 pub struct Config {
     pub max_image_width: Option<u32>,
