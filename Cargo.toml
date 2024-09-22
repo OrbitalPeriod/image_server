@@ -10,3 +10,6 @@ dotenv = "0.15.0"
 futures = "0.3.30"
 image = "0.25.2"
 tokio = { version = "1.40.0", features = ["full"] }
+tower-http = { version = "0.6.0", features = ["trace"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"

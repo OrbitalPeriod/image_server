@@ -1,17 +1,25 @@
-use std::error::Error;
-
 use image_server::Config;
+use tracing::warn;
+use tracing_subscriber::FmtSubscriber;
+
+mod api;
 
 #[tokio::main]
 async fn main() {
-    if let Ok(_) = dotenv::dotenv() {
-        //dotenv loaded
-    }
+    let subscriber = if cfg!(debug_assertions){
+        FmtSubscriber::builder().with_max_level(tracing::Level::DEBUG).finish()
+    }else{
+        FmtSubscriber::builder().with_max_level(tracing::Level::WARN).finish()
+    };
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
+    let _ = dotenv::dotenv();
 
     let config = get_config();
 
     if let Err(e) = image_server::run(config).await {
-        eprintln!("Some error occured running the server: {e:?}")
+        warn!("Some error occured running the server: {e:?}");
     }
 }
 
