@@ -1,18 +1,34 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart},
+    debug_handler,
+    extract::{DefaultBodyLimit, Multipart, State},
+    response::Html,
     routing::post,
     Router,
 };
 use image::ImageReader;
+use std::{io::Cursor, sync::Arc};
 use tracing::info;
-use std::io::Cursor;
-use tokio::io::AsyncWriteExt;
 
-pub fn router(body_limit: &DefaultBodyLimit) -> Router {
-    Router::new().route("/upload", post(upload).layer(body_limit.clone()))
+use crate::database::Database;
+
+struct ApiState {
+    pub database: Database,
 }
 
-async fn upload(mut multipart: Multipart) {
+pub fn router(body_limit: &DefaultBodyLimit, database: Database) -> Router {
+    let api_state = Arc::new(ApiState { database });
+
+    Router::new()
+        .route("/upload", post(upload))
+        .with_state(api_state)
+        .layer(body_limit.clone())
+}
+
+#[debug_handler]
+async fn upload(
+    State(state): State<Arc<ApiState>>,
+    mut multipart: Multipart,
+) -> Html<&'static str> {
     info!("accepted request");
     let mut file_data: Vec<u8> = Vec::new();
 
@@ -26,19 +42,18 @@ async fn upload(mut multipart: Multipart) {
     }
 
     let file_data = file_data;
-    {
-        let mut reader = ImageReader::new(Cursor::new(&file_data));
-        reader.no_limits();
-        let image_data = reader.with_guessed_format().unwrap();
-        match image_data.format() {
-            Some(_image) => {}
-            None => {}
+
+    let mut reader = ImageReader::new(Cursor::new(file_data));
+    reader.no_limits();
+    let image_data = reader.with_guessed_format().unwrap();
+    match image_data.format() {
+        Some(_image) => {
+            let _ = state.database.save_image(image_data).await.unwrap();
+            Html("Good job!")
+        }
+        None => {
+            info!("Invalid image format...");
+            Html("Something went wrong...")
         }
     }
-
-    let mut file = tokio::fs::File::create("test.png").await.unwrap();
-    match file.write_all(&file_data).await {
-        Ok(_) => {}
-        Err(e) => {}
-    };
 }

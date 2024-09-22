@@ -1,8 +1,8 @@
+use std::{path::PathBuf, str::FromStr};
+
 use image_server::Config;
 use tracing::warn;
 use tracing_subscriber::FmtSubscriber;
-
-mod api;
 
 #[tokio::main]
 async fn main() {
@@ -67,11 +67,17 @@ fn get_config() -> Config {
         panic!("backend port to large, assign value below 25565");
     }
 
+    let database_url = env::var("DATABASE_URL").expect("'DATABASE_URL' must be set.");
+
+    let image_path = PathBuf::from_str(&env::var("IMAGE_PATH").unwrap_or("images".to_string())).expect("image_path does not exist");
+
     Config {
         max_image_width,
         max_image_height,
         max_image_size,
         max_memory_usage,
         backend_port,
+        database_url,
+        image_path,
     }
 }
