@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fmt::Write, // Add this line to bring the Write trait into scope
     io::{BufRead, Read, Seek},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
 };
 
@@ -10,6 +10,7 @@ use image::{ImageError, ImageReader};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::Config;
 
@@ -43,31 +44,23 @@ impl Database {
         })
     }
 
-    pub async fn save_image<R>(&self, imagereader: ImageReader<R>) -> Result<(), ImageError>
+    pub async fn save_image<R>(&self, imagereader: ImageReader<R>) -> Result<Uuid, ImageError>
     where
         R: Read + Seek + Send + BufRead + 'static,
     {
-        let (file_name, file_location) = loop {
+        let file_identifier = loop {
             let uid = uuid::Uuid::new_v4();
 
-            let mut file_name = String::with_capacity(20);
-            for byte in uid.as_bytes().iter() {
-                write!(file_name, "{:02x}", byte).unwrap();
-            }
-            file_name.push_str(".png");
-
-            let image_folder = self.image_location.join(file_name.clone());
-
-            if !image_folder.exists() {
-                break (file_name, image_folder);
+            if !self.file_exists(&uid).await {
+                break uid;
             }
         };
 
-        debug!("{file_name}");
+        let file_path = ImagePath::new(&self.image_location, &file_identifier);
 
         let result = sqlx::query!(
-            "INSERT INTO images (file_name) VALUES ($1) RETURNING id",
-            file_name
+            "INSERT INTO images (image_identifier) VALUES ($1) RETURNING id",
+            file_identifier
         )
         .fetch_one(&self.pool)
         .await
@@ -76,7 +69,7 @@ impl Database {
         let transmitter = self.transmitter.clone();
         tokio::task::spawn_blocking(move || {
             let image = imagereader.decode().unwrap();
-            image.save(file_location).unwrap();
+            image.save(file_path).unwrap();
             tokio::runtime::Handle::current().block_on(async {
                 transmitter
                     .send(DatabaseMessage::Computed(result.id))
@@ -85,20 +78,23 @@ impl Database {
             });
         });
 
-        Ok(())
+        Ok(file_identifier)
     }
-    pub async fn get_image_location(&self, id: i32) -> Result<PathBuf, DatabaseError> {
-        let result = sqlx::query!("SELECT file_name, computed FROM images WHERE id=$1", id)
-            .fetch_one(&self.pool)
-            .await;
+    pub async fn get_image_location(
+        &self,
+        file_identifier: &Uuid,
+    ) -> Result<ImagePath, DatabaseError> {
+        let result = sqlx::query!(
+            "SELECT computed FROM images WHERE image_identifier=$1",
+            file_identifier
+        )
+        .fetch_one(&self.pool)
+        .await;
 
         match result {
             Ok(record) => {
                 if record.computed {
-                    Ok(self.image_location.join(
-                        PathBuf::from_str(&record.file_name)
-                            .expect("File not a valid file locaiton"),
-                    ))
+                    Ok(ImagePath::new(&self.image_location, file_identifier))
                 } else {
                     Err(DatabaseError::NotComputed)
                 }
@@ -106,6 +102,16 @@ impl Database {
             Err(sqlx::Error::RowNotFound) => Err(DatabaseError::NotFound),
             Err(e) => panic!("{e:?}"),
         }
+    }
+    async fn file_exists(&self, image_identifier: &Uuid) -> bool {
+        sqlx::query!(
+            "SELECT * FROM images WHERE image_identifier=$1",
+            image_identifier
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap()
+        .is_some()
     }
 }
 
@@ -127,5 +133,23 @@ impl DatabaseReceiver {
             .execute(&pool)
             .await
             .unwrap();
+    }
+}
+
+pub struct ImagePath(PathBuf);
+
+impl ImagePath {
+    pub fn new(image_folder: &PathBuf, image_identifier: &Uuid) -> ImagePath {
+        let mut location = String::with_capacity(32);
+        for byte in image_identifier.as_bytes().iter(){
+            write!(location, "{:02x}", byte).unwrap()
+        }
+        ImagePath(image_folder.join(location).with_extension("png"))
+    }
+}
+
+impl AsRef<Path> for ImagePath {
+    fn as_ref(&self) -> &Path {
+        &self.0.as_ref()
     }
 }

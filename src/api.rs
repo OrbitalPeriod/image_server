@@ -8,7 +8,8 @@ use axum::{
     Router,
 };
 use image::ImageReader;
-use std::{io::Cursor, sync::Arc};
+use uuid::Uuid;
+use std::{io::Cursor, str::FromStr, sync::Arc};
 use tracing::info;
 
 use crate::database::Database;
@@ -31,7 +32,7 @@ pub fn router(body_limit: &DefaultBodyLimit, database: Database) -> Router {
 async fn upload(
     State(state): State<Arc<ApiState>>,
     mut multipart: Multipart,
-) -> Html<&'static str> {
+) -> Html<String> {
     info!("accepted request");
     let mut file_data: Vec<u8> = Vec::new();
 
@@ -51,12 +52,12 @@ async fn upload(
     let image_data = reader.with_guessed_format().unwrap();
     match image_data.format() {
         Some(_image) => {
-            state.database.save_image(image_data).await.unwrap();
-            Html("Good job!")
+            let uuid = state.database.save_image(image_data).await.unwrap();
+            Html(format!("Good job! file has uuid: {:?}", uuid))
         }
         None => {
             info!("Invalid image format...");
-            Html("Something went wrong...")
+            Html("Something went wrong...".into())
         }
     }
 }
@@ -64,9 +65,11 @@ async fn upload(
 #[debug_handler]
 async fn serve_image(
     State(state): State<Arc<ApiState>>,
-    Path(image_id): Path<i32>,
+    Path(image_identifier): Path<String>,
 ) -> impl IntoResponse {
-    let image_path = state.database.get_image_location(image_id).await.unwrap();
+    let uuid = Uuid::from_str(&image_identifier).unwrap();
+
+    let image_path = state.database.get_image_location(&uuid).await.unwrap();
 
     let mime_type = mime_guess::from_path(&image_path).first_or_octet_stream();
     let image = tokio::fs::read(&image_path).await.unwrap();

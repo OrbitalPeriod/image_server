@@ -3,8 +3,11 @@
 - present images
 - Add options to view image in different formats/sizes
 - Add TTL to images
-- Add another variable to the database that can be used client side.
 - Make max image width, height, and size actually do something
 - make max_memory_usage actually do something
+- Remove ID, make image_identifier key.
 
 - Make website for uploading images.
+
+#Done:
+- Add another variable to the database that can be used client side.
