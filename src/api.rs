@@ -1,8 +1,10 @@
 use axum::{
+    body::Bytes,
     debug_handler,
-    extract::{DefaultBodyLimit, Multipart, State},
-    response::Html,
-    routing::post,
+    extract::{DefaultBodyLimit, Multipart, Path, State},
+    http::{Response, StatusCode},
+    response::{Html, IntoResponse},
+    routing::{get, post},
     Router,
 };
 use image::ImageReader;
@@ -20,8 +22,9 @@ pub fn router(body_limit: &DefaultBodyLimit, database: Database) -> Router {
 
     Router::new()
         .route("/upload", post(upload))
-        .with_state(api_state)
         .layer(body_limit.clone())
+        .route("/:image_id", get(serve_image))
+        .with_state(api_state)
 }
 
 #[debug_handler]
@@ -48,7 +51,7 @@ async fn upload(
     let image_data = reader.with_guessed_format().unwrap();
     match image_data.format() {
         Some(_image) => {
-            let _ = state.database.save_image(image_data).await.unwrap();
+            state.database.save_image(image_data).await.unwrap();
             Html("Good job!")
         }
         None => {
@@ -56,4 +59,24 @@ async fn upload(
             Html("Something went wrong...")
         }
     }
+}
+
+#[debug_handler]
+async fn serve_image(
+    State(state): State<Arc<ApiState>>,
+    Path(image_id): Path<i32>,
+) -> impl IntoResponse {
+    let image_path = state.database.get_image_location(image_id).await.unwrap();
+
+    let mime_type = mime_guess::from_path(&image_path).first_or_octet_stream();
+    let image = tokio::fs::read(&image_path).await.unwrap();
+
+    let bytes = Bytes::from(image);
+    let body = axum::body::Body::from(bytes);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", mime_type.as_ref())
+        .body(body)
+        .unwrap()
 }
