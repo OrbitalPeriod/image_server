@@ -985,6 +985,7 @@ dependencies = [
  "mime_guess",
  "rand",
  "random",
+ "serde",
  "sqlx",
  "tokio",
  "tokio-util",

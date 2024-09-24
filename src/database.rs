@@ -21,7 +21,7 @@ pub struct Database {
 }
 
 enum DatabaseMessage {
-    Computed(i32),
+    Computed(Uuid),
 }
 
 #[derive(Debug)]
@@ -59,10 +59,10 @@ impl Database {
         let file_path = ImagePath::new(&self.image_location, &file_identifier);
 
         let result = sqlx::query!(
-            "INSERT INTO images (image_identifier) VALUES ($1) RETURNING id",
+            "INSERT INTO images (image_identifier) VALUES ($1)",
             file_identifier
         )
-        .fetch_one(&self.pool)
+        .execute(&self.pool)
         .await
         .unwrap();
 
@@ -72,7 +72,7 @@ impl Database {
             image.save(file_path).unwrap();
             tokio::runtime::Handle::current().block_on(async {
                 transmitter
-                    .send(DatabaseMessage::Computed(result.id))
+                    .send(DatabaseMessage::Computed(file_identifier))
                     .await
                     .unwrap()
             });
@@ -128,8 +128,8 @@ impl DatabaseReceiver {
         }
     }
 
-    async fn image_computed(image_id: i32, pool: PgPool) {
-        let _ = sqlx::query!("UPDATE images SET computed=true WHERE id=$1", image_id)
+    async fn image_computed(image_id: Uuid, pool: PgPool) {
+        let _ = sqlx::query!("UPDATE images SET computed=true WHERE image_identifier=$1", image_id)
             .execute(&pool)
             .await
             .unwrap();
@@ -139,9 +139,9 @@ impl DatabaseReceiver {
 pub struct ImagePath(PathBuf);
 
 impl ImagePath {
-    pub fn new(image_folder: &PathBuf, image_identifier: &Uuid) -> ImagePath {
+    pub fn new(image_folder: &Path, image_identifier: &Uuid) -> ImagePath {
         let mut location = String::with_capacity(32);
-        for byte in image_identifier.as_bytes().iter(){
+        for byte in image_identifier.as_bytes().iter() {
             write!(location, "{:02x}", byte).unwrap()
         }
         ImagePath(image_folder.join(location).with_extension("png"))
@@ -150,6 +150,6 @@ impl ImagePath {
 
 impl AsRef<Path> for ImagePath {
     fn as_ref(&self) -> &Path {
-        &self.0.as_ref()
+        self.0.as_ref()
     }
 }

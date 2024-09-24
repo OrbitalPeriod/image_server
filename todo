@@ -1,13 +1,14 @@
 - Create a solid apiresponse object that can be used everywhere
 - fix error handling#
-- present images
-- Add options to view image in different formats/sizes
 - Add TTL to images
 - Make max image width, height, and size actually do something
 - make max_memory_usage actually do something
-- Remove ID, make image_identifier key.
-
 - Make website for uploading images.
+- Save other formats of image if they are created, and integrate this with database
+- Make the default image format adjustable.
 
 #Done:
 - Add another variable to the database that can be used client side.
+- present images
+- Add options to view image in different formats/sizes
+- Remove ID, make image_identifier key.
