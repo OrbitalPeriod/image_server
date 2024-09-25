@@ -2,14 +2,15 @@ use std::{
     error::Error,
     fmt::Write, // Add this line to bring the Write trait into scope
     io::{BufRead, Read, Seek},
-    path::{Path, PathBuf},
-    str::FromStr,
+    path::{Path, PathBuf}, sync::Arc,
 };
 
+use sqlx::prelude::*;
+
+use crate::image_format::ImageFormat;
 use image::{ImageError, ImageReader};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::debug;
 use uuid::Uuid;
 
 use crate::Config;
@@ -21,13 +22,14 @@ pub struct Database {
 }
 
 enum DatabaseMessage {
-    Computed(Uuid),
+    Computed(Uuid, ImageFormat),
 }
 
 #[derive(Debug)]
 pub enum DatabaseError {
     NotComputed,
     NotFound,
+    FoundButNotInFormat(ImagePath),
 }
 
 impl Database {
@@ -44,7 +46,11 @@ impl Database {
         })
     }
 
-    pub async fn save_image<R>(&self, imagereader: ImageReader<R>) -> Result<Uuid, ImageError>
+    pub async fn save_image<R>(
+        &self,
+        imagereader: ImageReader<R>,
+        image_format: ImageFormat,
+    ) -> Result<Uuid, ImageError>
     where
         R: Read + Seek + Send + BufRead + 'static,
     {
@@ -56,11 +62,12 @@ impl Database {
             }
         };
 
-        let file_path = ImagePath::new(&self.image_location, &file_identifier);
+        let file_path = ImagePath::new(&self.image_location, &file_identifier, image_format);
 
         let result = sqlx::query!(
-            "INSERT INTO images (image_identifier) VALUES ($1)",
-            file_identifier
+            "INSERT INTO images (image_identifier, image_format) VALUES ($1, $2)",
+            file_identifier,
+            image_format.to_str()
         )
         .execute(&self.pool)
         .await
@@ -69,10 +76,10 @@ impl Database {
         let transmitter = self.transmitter.clone();
         tokio::task::spawn_blocking(move || {
             let image = imagereader.decode().unwrap();
-            image.save(file_path).unwrap();
+            image.save_with_format(file_path, *image_format).unwrap();
             tokio::runtime::Handle::current().block_on(async {
                 transmitter
-                    .send(DatabaseMessage::Computed(file_identifier))
+                    .send(DatabaseMessage::Computed(file_identifier, image_format))
                     .await
                     .unwrap()
             });
@@ -80,23 +87,67 @@ impl Database {
 
         Ok(file_identifier)
     }
+
+    pub async fn save_raw_image(&self, data : Vec<u8>, image_identifier: &Uuid, image_format: ImageFormat){
+        let file_path = ImagePath::new(&self.image_location, image_identifier, image_format);
+        let result = sqlx::query!(
+            "INSERT INTO images (image_identifier, image_format) VALUES ($1, $2)",
+            image_identifier,
+            image_format.to_str()
+        )
+        .execute(&self.pool)
+        .await
+        .unwrap();
+
+        let transmitter = self.transmitter.clone();
+        let image_identifier = image_identifier.clone();
+        tokio::spawn(async move {
+            tokio::fs::write(file_path, data.as_slice()).await.unwrap();
+            transmitter.send(DatabaseMessage::Computed(image_identifier, image_format)).await.unwrap()
+        });
+    }
+
     pub async fn get_image_location(
         &self,
         file_identifier: &Uuid,
+        image_format: ImageFormat,
     ) -> Result<ImagePath, DatabaseError> {
         let result = sqlx::query!(
-            "SELECT computed FROM images WHERE image_identifier=$1",
-            file_identifier
+            "SELECT computed, image_format FROM images WHERE image_identifier=$1",
+            file_identifier,
         )
-        .fetch_one(&self.pool)
+        .fetch_all(&self.pool)
         .await;
 
         match result {
             Ok(record) => {
-                if record.computed {
-                    Ok(ImagePath::new(&self.image_location, file_identifier))
-                } else {
-                    Err(DatabaseError::NotComputed)
+                let matching_record = record
+                    .iter()
+                    .filter(|image| {
+                        ImageFormat::from_str(&image.image_format)
+                            .expect("invalid format in database")
+                            == image_format
+                    })
+                    .take(1)
+                    .last();
+                match matching_record {
+                    Some(matching) => {
+                        if matching.computed {
+                            Ok(ImagePath::new(
+                                &self.image_location,
+                                file_identifier,
+                                image_format,
+                            ))
+                        } else {
+                            Err(DatabaseError::NotComputed)
+                        }
+                    }
+                    None => Err(DatabaseError::FoundButNotInFormat(ImagePath::new(
+                        &self.image_location,
+                        file_identifier,
+                        ImageFormat::from_str(&record.first().unwrap().image_format)
+                            .expect("invalid thing in database"),
+                    ))),
                 }
             }
             Err(sqlx::Error::RowNotFound) => Err(DatabaseError::NotFound),
@@ -121,30 +172,42 @@ impl DatabaseReceiver {
     async fn compute_message(mut rx: Receiver<DatabaseMessage>, pool: PgPool) {
         while let Some(message) = rx.recv().await {
             match message {
-                DatabaseMessage::Computed(image) => {
-                    tokio::spawn(Self::image_computed(image, pool.clone()));
+                DatabaseMessage::Computed(image, image_format) => {
+                    tokio::spawn(Self::image_computed(image, image_format, pool.clone()));
                 }
             }
         }
     }
 
-    async fn image_computed(image_id: Uuid, pool: PgPool) {
-        let _ = sqlx::query!("UPDATE images SET computed=true WHERE image_identifier=$1", image_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+    async fn image_computed(image_id: Uuid, file_format : ImageFormat, pool: PgPool) {
+        let _ = sqlx::query!(
+            "UPDATE images SET computed=true WHERE image_identifier=$1",
+            image_id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 }
 
+#[derive(Debug)]
 pub struct ImagePath(PathBuf);
 
 impl ImagePath {
-    pub fn new(image_folder: &Path, image_identifier: &Uuid) -> ImagePath {
+    pub fn new(
+        image_folder: &Path,
+        image_identifier: &Uuid,
+        image_format: ImageFormat,
+    ) -> ImagePath {
         let mut location = String::with_capacity(32);
         for byte in image_identifier.as_bytes().iter() {
             write!(location, "{:02x}", byte).unwrap()
         }
-        ImagePath(image_folder.join(location).with_extension("png"))
+        ImagePath(
+            image_folder
+                .join(location)
+                .with_extension(image_format.extension()),
+        )
     }
 }
 

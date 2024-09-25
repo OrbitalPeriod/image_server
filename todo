@@ -4,7 +4,6 @@
 - Make max image width, height, and size actually do something
 - make max_memory_usage actually do something
 - Make website for uploading images.
-- Save other formats of image if they are created, and integrate this with database
 - Make the default image format adjustable.
 
 #Done:
@@ -12,3 +11,4 @@
 - present images
 - Add options to view image in different formats/sizes
 - Remove ID, make image_identifier key.
+- Save other formats of image if they are created, and integrate this with database

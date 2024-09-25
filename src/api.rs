@@ -1,3 +1,4 @@
+use crate::{image_format::ImageFormat, transcode};
 use axum::{
     body::Bytes,
     debug_handler,
@@ -7,8 +8,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use image::{ImageFormat, ImageReader};
+use image::ImageReader;
 use serde::{de, Deserialize, Deserializer};
+use sqlx::Either::{Left, Right};
 use std::{io::Cursor, str::FromStr, sync::Arc};
 use tracing::info;
 use uuid::Uuid;
@@ -53,7 +55,7 @@ async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) ->
     let image_data = reader.with_guessed_format().unwrap();
     match image_data.format() {
         Some(_image) => {
-            let uuid = state.database.save_image(image_data).await.unwrap();
+            let uuid = state.database.save_image(image_data, ImageFormat::PNG).await.unwrap();
             Html(format!("Good job! file has uuid: {:?}", uuid))
         }
         None => {
@@ -63,7 +65,7 @@ async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) ->
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Copy)]
 struct ImageSettings {
     #[serde(default, deserialize_with = "empty_string_as_none_image_format")]
     pub format: Option<ImageFormat>,
@@ -73,12 +75,12 @@ struct ImageSettings {
     pub height: Option<u32>,
 }
 
-impl Into<TranscodeTarget> for ImageSettings {
-    fn into(self) -> TranscodeTarget {
+impl From<ImageSettings> for TranscodeTarget {
+    fn from(val: ImageSettings) -> Self {
         TranscodeTarget {
-            image_format: self.format,
-            image_width: self.width,
-            image_height: self.height,
+            image_format: val.format,
+            image_width: val.width,
+            image_height: val.height,
         }
     }
 }
@@ -90,11 +92,11 @@ where
     let opt = Option::<String>::deserialize(de)?;
     match opt.as_deref() {
         None | Some("") => Ok(None),
-        Some("png") => Ok(Some(ImageFormat::Png)),
-        Some("jpg") | Some("jpeg") => Ok(Some(ImageFormat::Jpeg)),
-        Some("webp") => Ok(Some(ImageFormat::WebP)),
-        Some("hdr") => Ok(Some(ImageFormat::Hdr)),
-        Some("avif") => Ok(Some(ImageFormat::Avif)),
+        Some("png") => Ok(Some(ImageFormat::PNG)),
+        Some("jpg") | Some("jpeg") => Ok(Some(ImageFormat::JPG)),
+        Some("webp") => Ok(Some(ImageFormat::WEBP)),
+        Some("hdr") => Ok(Some(ImageFormat::HDR)),
+        Some("avif") => Ok(Some(ImageFormat::AVIF)),
         Some(other) => Err(de::Error::custom(format!(
             "unsupported image format: {}",
             other
@@ -120,17 +122,8 @@ async fn serve_image(
     Query(query): Query<ImageSettings>,
 ) -> impl IntoResponse {
     let uuid = Uuid::from_str(&image_identifier).unwrap();
-    let image_path = state.database.get_image_location(&uuid).await.unwrap();
-    let mime_format = query.format.unwrap_or(ImageFormat::Png);
-
-    let image = if query.width.is_some() || query.height.is_some() || query.format.is_some() {
-        let mut image = ImageReader::open(&image_path).unwrap();
-        image.no_limits();
-        let image_data = image.decode().unwrap();
-        transcode(image_data, query.into()).await
-    } else {
-        tokio::fs::read(&image_path).await.unwrap()
-    };
+    let image = transcode::get_image(uuid, query.into(), &state.database).await;
+    let mime_format = query.format.unwrap_or(ImageFormat::PNG);
 
     let bytes = Bytes::from(image);
     let body = axum::body::Body::from(bytes);
