@@ -88,9 +88,9 @@ impl Database {
         Ok(file_identifier)
     }
 
-    pub async fn save_raw_image(&self, data : Vec<u8>, image_identifier: &Uuid, image_format: ImageFormat){
-        let file_path = ImagePath::new(&self.image_location, image_identifier, image_format);
-        let result = sqlx::query!(
+    pub async fn save_raw_image(&self, data : Vec<u8>, image_identifier: Uuid, image_format: ImageFormat){
+        let file_path = ImagePath::new(&self.image_location, &image_identifier, image_format);
+        let _result = sqlx::query!(
             "INSERT INTO images (image_identifier, image_format) VALUES ($1, $2)",
             image_identifier,
             image_format.to_str()
@@ -100,7 +100,6 @@ impl Database {
         .unwrap();
 
         let transmitter = self.transmitter.clone();
-        let image_identifier = image_identifier.clone();
         tokio::spawn(async move {
             tokio::fs::write(file_path, data.as_slice()).await.unwrap();
             transmitter.send(DatabaseMessage::Computed(image_identifier, image_format)).await.unwrap()
@@ -181,8 +180,9 @@ impl DatabaseReceiver {
 
     async fn image_computed(image_id: Uuid, file_format : ImageFormat, pool: PgPool) {
         let _ = sqlx::query!(
-            "UPDATE images SET computed=true WHERE image_identifier=$1",
-            image_id
+            "UPDATE images SET computed=true WHERE image_identifier=$1 AND image_format=$2",
+            image_id,
+            file_format.to_str()
         )
         .execute(&pool)
         .await

@@ -1,11 +1,8 @@
-use std::collections::VecDeque;
 use std::io::Cursor;
-use std::sync::Arc;
 
 use crate::database::Database;
 use crate::image_format::ImageFormat;
 use image::{DynamicImage, ImageReader};
-use sqlx::Either::{Left, Right};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +50,12 @@ pub async fn get_image(image_id: Uuid, settings: TranscodeTarget, database: &Dat
             if settings.image_width.is_none() && settings.image_height.is_none() {
                 tokio::fs::read(image_path).await.unwrap()
             } else {
-                let image = ImageReader::open(image_path).unwrap().decode().unwrap();
+                let image = tokio::task::spawn_blocking(move || {
+                    ImageReader::open(image_path).unwrap().decode().unwrap()
+                })
+                .await
+                .unwrap();
+
                 transcode(image, settings).await
             }
         }
@@ -61,14 +63,19 @@ pub async fn get_image(image_id: Uuid, settings: TranscodeTarget, database: &Dat
             todo!()
         }
         Err(crate::database::DatabaseError::FoundButNotInFormat(image_path)) => {
-            let mut imagereader = ImageReader::open(image_path).unwrap();
-            imagereader.no_limits();
-            let wrong_format_image = imagereader.decode().unwrap();
+            let wrong_format_image = tokio::task::spawn_blocking(move || {
+                let mut imagereader = ImageReader::open(image_path).unwrap();
+                imagereader.no_limits();
+                imagereader.decode().unwrap()
+            })
+            .await
+            .unwrap();
+
             let data = transcode(wrong_format_image, settings).await;
             database
                 .save_raw_image(
                     data.clone(),
-                    &image_id,
+                    image_id,
                     settings.image_format.unwrap_or_default(),
                 )
                 .await;

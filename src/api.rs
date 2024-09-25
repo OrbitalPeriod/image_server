@@ -10,15 +10,11 @@ use axum::{
 };
 use image::ImageReader;
 use serde::{de, Deserialize, Deserializer};
-use sqlx::Either::{Left, Right};
 use std::{io::Cursor, str::FromStr, sync::Arc};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{
-    database::Database,
-    transcode::{transcode, TranscodeTarget},
-};
+use crate::{database::Database, transcode::TranscodeTarget};
 
 struct ApiState {
     pub database: Database,
@@ -55,7 +51,11 @@ async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) ->
     let image_data = reader.with_guessed_format().unwrap();
     match image_data.format() {
         Some(_image) => {
-            let uuid = state.database.save_image(image_data, ImageFormat::PNG).await.unwrap();
+            let uuid = state
+                .database
+                .save_image(image_data, ImageFormat::PNG)
+                .await
+                .unwrap();
             Html(format!("Good job! file has uuid: {:?}", uuid))
         }
         None => {
