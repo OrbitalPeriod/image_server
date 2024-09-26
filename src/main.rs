@@ -9,7 +9,7 @@ async fn main() {
     let subscriber = if cfg!(debug_assertions){
         FmtSubscriber::builder().with_max_level(tracing::Level::DEBUG).finish()
     }else{
-        FmtSubscriber::builder().with_max_level(tracing::Level::DEBUG).finish()
+        FmtSubscriber::builder().with_max_level(tracing::Level::INFO).finish()
     };
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");

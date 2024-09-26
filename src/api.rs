@@ -1,4 +1,7 @@
-use crate::{image_format::ImageFormat, transcode};
+use crate::{
+    image_format::ImageFormat,
+    transcode::{self, TranscoderError},
+};
 use axum::{
     body::Bytes,
     debug_handler,
@@ -11,7 +14,7 @@ use axum::{
 use image::ImageReader;
 use serde::{de, Deserialize, Deserializer};
 use std::{io::Cursor, str::FromStr, sync::Arc};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{database::Database, transcode::TranscodeTarget};
@@ -32,9 +35,7 @@ pub fn router(body_limit: &DefaultBodyLimit, database: Database) -> Router {
 
 #[debug_handler]
 async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) -> Html<String> {
-    info!("accepted request");
     let mut file_data: Vec<u8> = Vec::new();
-
     while let Some(field) = multipart
         .next_field()
         .await
@@ -51,16 +52,21 @@ async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) ->
     let image_data = reader.with_guessed_format().unwrap();
     match image_data.format() {
         Some(_image) => {
-            let uuid = state
+            match state
                 .database
                 .save_image(image_data, ImageFormat::PNG)
                 .await
-                .unwrap();
-            Html(format!("Good job! file has uuid: {:?}", uuid))
+            {
+                Ok(uuid) => Html(format!("Good job! file has uuid: {:?}", uuid)),
+                Err(e) => {
+                    warn!("Error trying to save new image to database: {e:?}");
+                    Html("Internal server error...".to_string())
+                }
+            }
         }
         None => {
             info!("Invalid image format...");
-            Html("Something went wrong...".into())
+            Html("Invalid image format...".into())
         }
     }
 }
@@ -121,8 +127,33 @@ async fn serve_image(
     Path(image_identifier): Path<String>,
     Query(query): Query<ImageSettings>,
 ) -> impl IntoResponse {
-    let uuid = Uuid::from_str(&image_identifier).unwrap();
-    let image = transcode::get_image(uuid, query.into(), &state.database).await;
+    let uuid = match Uuid::from_str(&image_identifier) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return build_response(StatusCode::BAD_REQUEST, "Invalid image id".into())
+        }
+    };
+
+    let image = match transcode::get_image(uuid, query.into(), &state.database).await {
+        Ok(image) => image,
+        Err(TranscoderError::ImageError(e)) => {
+            warn!("Image could not be computed: {e:?}");
+            return build_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ERROR TRANSCODING IMAGES".into(),
+            );
+        }
+        Err(TranscoderError::NotComputed) => {
+            return build_response(StatusCode::NOT_FOUND, "Image not yet computed".into());
+        }
+        Err(TranscoderError::NotFound) => {
+            return build_response(StatusCode::NOT_FOUND, "Image not found".into());
+        }
+        Err(TranscoderError::InternalServerError(e)) => {
+            warn!("Something went wrong trying to get an image: {e:?}");
+            return build_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR".into())
+        }
+    };
     let mime_format = query.format.unwrap_or(ImageFormat::PNG);
 
     let bytes = Bytes::from(image);
@@ -133,4 +164,9 @@ async fn serve_image(
         .header("Content-Type", mime_format.to_mime_type())
         .body(body)
         .unwrap()
+}
+
+fn build_response(status: StatusCode, message: String) -> Response<axum::body::Body> {
+    let body = axum::body::Body::from(Bytes::from(message));
+    Response::builder().status(status).body(body).unwrap()
 }

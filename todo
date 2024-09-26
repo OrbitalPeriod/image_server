@@ -1,12 +1,12 @@
-- Create a solid apiresponse object that can be used everywhere
-- fix error handling#
 - Add TTL to images
 - Make max image width, height, and size actually do something
 - make max_memory_usage actually do something
 - Make website for uploading images.
 - Make the default image format adjustable.
+- At startup, check all images that need to be transcoded.
 
 #Done:
+- fix error handling
 - Add another variable to the database that can be used client side.
 - present images
 - Add options to view image in different formats/sizes
