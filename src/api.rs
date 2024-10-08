@@ -11,6 +11,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use chrono::{DateTime, Duration, TimeDelta, Utc};
 use image::ImageReader;
 use serde::{de, Deserialize, Deserializer};
 use std::{io::Cursor, str::FromStr, sync::Arc};
@@ -54,7 +55,7 @@ async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) ->
         Some(_image) => {
             match state
                 .database
-                .save_image(image_data, ImageFormat::PNG)
+                .save_image(image_data, ImageFormat::PNG, &(Utc::now() + Duration::minutes(2))) //TODO: This is not at 2 minutes, make it variable with config.
                 .await
             {
                 Ok(uuid) => Html(format!("Good job! file has uuid: {:?}", uuid)),
@@ -129,12 +130,10 @@ async fn serve_image(
 ) -> impl IntoResponse {
     let uuid = match Uuid::from_str(&image_identifier) {
         Ok(uuid) => uuid,
-        Err(_) => {
-            return build_response(StatusCode::BAD_REQUEST, "Invalid image id".into())
-        }
+        Err(_) => return build_response(StatusCode::BAD_REQUEST, "Invalid image id".into()),
     };
 
-    let image = match transcode::get_image(uuid, query.into(), &state.database).await {
+    let image = match transcode::get_image(uuid, query.into(), &state.database, &Utc::now()).await {
         Ok(image) => image,
         Err(TranscoderError::ImageError(e)) => {
             warn!("Image could not be computed: {e:?}");
@@ -151,7 +150,10 @@ async fn serve_image(
         }
         Err(TranscoderError::InternalServerError(e)) => {
             warn!("Something went wrong trying to get an image: {e:?}");
-            return build_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR".into())
+            return build_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL SERVER ERROR".into(),
+            );
         }
     };
     let mime_format = query.format.unwrap_or(ImageFormat::PNG);

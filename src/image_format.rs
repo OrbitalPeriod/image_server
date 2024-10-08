@@ -1,6 +1,6 @@
 use image::ImageFormat as InnerImageFormat;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-use sqlx::{Decode, Encode, PgPool, Postgres, Type};
+use sqlx::{Decode, Encode, Postgres, Type};
 use std::ops::Deref;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]

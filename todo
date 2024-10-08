@@ -1,4 +1,7 @@
-- Add TTL to images
+- See if i can refactor database to make save_image make use of save_raw_image
+- Make TTL a variable i can change
+- Add TTL you can add to an API request
+- Cache resized images (embed size information in ImageLocationPath)
 - Make max image width, height, and size actually do something
 - make max_memory_usage actually do something
 - Make website for uploading images.
@@ -12,3 +15,4 @@
 - Add options to view image in different formats/sizes
 - Remove ID, make image_identifier key.
 - Save other formats of image if they are created, and integrate this with database
+- Add TTL to images

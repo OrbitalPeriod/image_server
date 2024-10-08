@@ -6,12 +6,12 @@ use std::{
     sync::Arc,
 };
 
+use chrono::{DateTime, Utc};
 use derive_more::derive::Display;
-use sqlx::prelude::*;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::image_format::ImageFormat;
-use image::{ImageError, ImageReader};
+use image::ImageReader;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
@@ -41,6 +41,7 @@ pub struct Database {
 
 enum DatabaseMessage {
     Computed(Uuid, ImageFormat),
+    CleanExpired,
 }
 
 impl Database {
@@ -48,7 +49,12 @@ impl Database {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let pool = PgPoolOptions::new().connect(&config.database_url).await?;
         let receiver_pool = pool.clone();
-        tokio::spawn(async move { DatabaseReceiver::compute_message(rx, receiver_pool).await });
+        let image_path = config.image_path.clone();
+        tokio::spawn(DatabaseReceiver::compute_message(
+            rx,
+            receiver_pool,
+            image_path,
+        ));
 
         Ok(Database {
             pool,
@@ -61,6 +67,7 @@ impl Database {
         &self,
         imagereader: ImageReader<R>,
         image_format: ImageFormat,
+        expires_at: &DateTime<Utc>,
     ) -> Result<Uuid, SaveImageError>
     where
         R: Read + Seek + Send + BufRead + 'static,
@@ -80,9 +87,10 @@ impl Database {
         let file_path = ImagePath::new(&self.image_location, &file_identifier, image_format);
 
         sqlx::query!(
-            "INSERT INTO images (image_identifier, image_format) VALUES ($1, $2)",
+            "INSERT INTO images (image_identifier, image_format, expires_at) VALUES ($1, $2, $3)",
             file_identifier,
-            image_format.to_str()
+            image_format.to_str(),
+            expires_at
         )
         .execute(&self.pool)
         .await
@@ -116,12 +124,14 @@ impl Database {
         data: Vec<u8>,
         image_identifier: Uuid,
         image_format: ImageFormat,
+        expires_at: &DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
         let file_path = ImagePath::new(&self.image_location, &image_identifier, image_format);
         let _result = sqlx::query!(
-            "INSERT INTO images (image_identifier, image_format) VALUES ($1, $2)",
+            "INSERT INTO images (image_identifier, image_format, expires_at) VALUES ($1, $2, $3)",
             image_identifier,
-            image_format.to_str()
+            image_format.to_str(),
+            expires_at
         )
         .execute(&self.pool)
         .await?;
@@ -144,9 +154,10 @@ impl Database {
         &self,
         file_identifier: &Uuid,
         image_format: ImageFormat,
+        max_time: &DateTime<Utc>,
     ) -> Result<ImagePath, GetImageError> {
         let result = sqlx::query!(
-            "SELECT computed, image_format FROM images WHERE image_identifier=$1",
+            "SELECT computed, image_format, expires_at FROM images WHERE image_identifier=$1",
             file_identifier,
         )
         .fetch_all(&self.pool)
@@ -154,13 +165,31 @@ impl Database {
 
         match result {
             Ok(record) => {
-                if record.is_empty() {
+                if record.iter().any(|image| &image.expires_at < max_time) {
+                    println!("owo");
+                    if let Err(e) = self.transmitter.send(DatabaseMessage::CleanExpired).await {
+                        warn!("Could not send to transmitter: {e:?}");
+                    }
+                }
+
+                let active: Vec<(bool, DateTime<Utc>, ImageFormat)> = record
+                    .into_iter()
+                    .map(|image| {
+                        (
+                            image.computed,
+                            image.expires_at,
+                            ImageFormat::from_str(&image.image_format)
+                                .expect("invalid image format in db"),
+                        )
+                    })
+                    .filter(|(_, expires_at, _)| expires_at > max_time)
+                    .collect();
+                if active.is_empty() {
                     Err(GetImageError::NotFound)
-                } else if let Some(right_format) = record.iter().find(|image| {
-                    ImageFormat::from_str(&image.image_format).expect("Invalid format in database")
-                        == image_format
-                }) {
-                    if right_format.computed {
+                } else if let Some((computed, _, _)) =
+                    active.iter().find(|(_, _, format)| &image_format == format)
+                {
+                    if *computed {
                         Ok(ImagePath::new(
                             &self.image_location,
                             file_identifier,
@@ -173,8 +202,7 @@ impl Database {
                     Err(GetImageError::FoundButNotInFormat(ImagePath::new(
                         &self.image_location,
                         file_identifier,
-                        ImageFormat::from_str(&record.first().unwrap().image_format)
-                            .expect("invalid thing in database"),
+                        active.first().unwrap().2,
                     )))
                 }
             }
@@ -196,11 +224,19 @@ impl Database {
 struct DatabaseReceiver();
 
 impl DatabaseReceiver {
-    async fn compute_message(mut rx: Receiver<DatabaseMessage>, pool: PgPool) {
+    //USE ARCS HERE
+    async fn compute_message(
+        mut rx: Receiver<DatabaseMessage>,
+        pool: PgPool,
+        image_folder: PathBuf,
+    ) {
         while let Some(message) = rx.recv().await {
             match message {
                 DatabaseMessage::Computed(image, image_format) => {
                     tokio::spawn(Self::image_computed(image, image_format, pool.clone()));
+                }
+                DatabaseMessage::CleanExpired => {
+                    tokio::spawn(Self::clean_expired(pool.clone(), image_folder.clone()));
                 }
             }
         }
@@ -215,6 +251,25 @@ impl DatabaseReceiver {
         .execute(&pool)
         .await
         .expect("Thread could not send query to sqlx");
+    }
+
+    async fn clean_expired(pool: PgPool, image_folder: PathBuf) {
+        debug!("Deleting expired images");
+        let expired = sqlx::query!(
+            "DELETE FROM images WHERE expires_at < $1 AND computed = True RETURNING image_identifier, image_format",
+            Utc::now()
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for image in expired {
+            let format = ImageFormat::from_str(&image.image_format)
+                .expect("INVALID IMAGE FORMAT IN DATABASE");
+            let file_path = ImagePath::new(&image_folder, &image.image_identifier, format);
+            if let Err(e) = tokio::fs::remove_file(file_path).await {
+                warn!("Something went wrong deleting expired image: {e:?}");
+            }
+        }
     }
 }
 
