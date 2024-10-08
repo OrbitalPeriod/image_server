@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use image::ImageReader;
 use serde::{de, Deserialize, Deserializer};
 use std::{io::Cursor, str::FromStr, sync::Arc};
@@ -24,8 +24,11 @@ struct ApiState {
     pub database: Database,
 }
 
+
 pub fn router(body_limit: &DefaultBodyLimit, database: Database) -> Router {
-    let api_state = Arc::new(ApiState { database });
+    let api_state = Arc::new(ApiState {
+        database,
+    });
 
     Router::new()
         .route("/upload", post(upload))
@@ -34,8 +37,19 @@ pub fn router(body_limit: &DefaultBodyLimit, database: Database) -> Router {
         .with_state(api_state)
 }
 
+#[derive(Deserialize)]
+struct UploadSettings{
+    ttl_secs : Option<i64>,
+}
+
 #[debug_handler]
-async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) -> Html<String> {
+async fn upload(
+    State(state): State<Arc<ApiState>>,
+    Query(uploadsettings): Query<UploadSettings>,
+    mut multipart: Multipart,
+) -> Html<String> {
+    let ttl = uploadsettings.ttl_secs.map(Duration::seconds);
+
     let mut file_data: Vec<u8> = Vec::new();
     while let Some(field) = multipart
         .next_field()
@@ -55,7 +69,11 @@ async fn upload(State(state): State<Arc<ApiState>>, mut multipart: Multipart) ->
         Some(_image) => {
             match state
                 .database
-                .save_image(image_data, ImageFormat::PNG, &(Utc::now() + Duration::minutes(2))) //TODO: This is not at 2 minutes, make it variable with config.
+                .save_image(
+                    image_data,
+                    ImageFormat::PNG,
+                    ttl,
+                ) //TODO: This is not at 2 minutes, make it variable with config.
                 .await
             {
                 Ok(uuid) => Html(format!("Good job! file has uuid: {:?}", uuid)),
@@ -133,7 +151,7 @@ async fn serve_image(
         Err(_) => return build_response(StatusCode::BAD_REQUEST, "Invalid image id".into()),
     };
 
-    let image = match transcode::get_image(uuid, query.into(), &state.database, &Utc::now()).await {
+    let image = match transcode::get_image(uuid, query.into(), &state.database, None).await {
         Ok(image) => image,
         Err(TranscoderError::ImageError(e)) => {
             warn!("Image could not be computed: {e:?}");

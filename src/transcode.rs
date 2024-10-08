@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use crate::database::Database;
 use crate::image_format::ImageFormat;
-use chrono::{DateTime, Utc};
+use chrono::{Duration, Utc};
 use image::{DynamicImage, ImageError, ImageReader};
 use uuid::Uuid;
 
@@ -55,10 +55,10 @@ pub async fn get_image(
     image_id: Uuid,
     settings: TranscodeTarget,
     database: &Database,
-    expirey_time : &DateTime<Utc>
+    ttl : Option<Duration>
 ) -> Result<Vec<u8>, TranscoderError> {
     let database_result = database
-        .get_image_location(&image_id, settings.image_format.unwrap_or_default(), expirey_time)
+        .get_image_location(&image_id, settings.image_format.unwrap_or_default(), &Utc::now())
         .await;
     match database_result {
         Ok(image_path) => {
@@ -99,7 +99,7 @@ pub async fn get_image(
                     data.clone(),
                     image_id,
                     settings.image_format.unwrap_or_default(),
-                    expirey_time
+                    ttl
                 )
                 .await
                 .map_err(|e| TranscoderError::InternalServerError(Box::new(e)))?;

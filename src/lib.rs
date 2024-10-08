@@ -1,4 +1,5 @@
 use axum::{extract::DefaultBodyLimit, response::Html, routing::get, Router};
+use chrono::Duration;
 use database::Database;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -18,6 +19,7 @@ pub struct Config {
     pub backend_port: u16,
     pub database_url: String,
     pub image_path : PathBuf,
+    pub image_ttl : Option<Duration>,
 }
 
 pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {

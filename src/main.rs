@@ -1,5 +1,6 @@
 use std::{path::PathBuf, str::FromStr};
 
+use chrono::Duration;
 use image_server::Config;
 use tracing::warn;
 use tracing_subscriber::FmtSubscriber;
@@ -71,6 +72,12 @@ fn get_config() -> Config {
 
     let image_path = PathBuf::from_str(&env::var("IMAGE_PATH").unwrap_or("images".to_string())).expect("image_path does not exist");
 
+    let image_ttl = env::var("IMAGE_TTL_SECS").map(|string|
+    {
+        let seconds = string.parse::<i64>().expect("Invalid format of 'IMAGE_TTL_SECS', please provide u64");
+        Duration::seconds(seconds)
+    }).ok();
+
     Config {
         max_image_width,
         max_image_height,
@@ -79,5 +86,6 @@ fn get_config() -> Config {
         backend_port,
         database_url,
         image_path,
+        image_ttl,
     }
 }

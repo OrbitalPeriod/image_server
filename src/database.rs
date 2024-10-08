@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use derive_more::derive::Display;
 use tracing::{debug, warn};
 
@@ -36,6 +36,7 @@ pub struct Database {
     pool: PgPool,
     image_location: PathBuf,
     transmitter: Sender<DatabaseMessage>,
+    image_ttl_allowed : Option<Duration>,
 }
 
 enum DatabaseMessage {
@@ -59,6 +60,7 @@ impl Database {
             pool,
             image_location: config.image_path.clone(),
             transmitter: tx,
+            image_ttl_allowed: config.image_ttl
         })
     }
 
@@ -66,11 +68,13 @@ impl Database {
         &self,
         imagereader: ImageReader<R>,
         image_format: ImageFormat,
-        expires_at: &DateTime<Utc>,
+        api_ttl: Option<Duration>,
     ) -> Result<Uuid, SaveImageError>
     where
         R: Read + Seek + Send + BufRead + 'static,
     {
+        let image_eol = Self::determine_eol(api_ttl, self.image_ttl_allowed);
+
         let file_identifier = loop {
             let uid = uuid::Uuid::new_v4();
 
@@ -89,7 +93,7 @@ impl Database {
             "INSERT INTO images (image_identifier, image_format, expires_at) VALUES ($1, $2, $3)",
             file_identifier,
             image_format.to_str(),
-            expires_at
+            image_eol.expect("TODO: OPTIONAL TTLS NOT YET IMPLEMENTED")
         )
         .execute(&self.pool)
         .await
@@ -123,14 +127,16 @@ impl Database {
         data: Vec<u8>,
         image_identifier: Uuid,
         image_format: ImageFormat,
-        expires_at: &DateTime<Utc>,
+        api_ttl: Option<Duration>,
     ) -> Result<(), sqlx::Error> {
+        let image_eol = Self::determine_eol(api_ttl, self.image_ttl_allowed);
+
         let file_path = ImagePath::new(&self.image_location, &image_identifier, image_format);
         let _result = sqlx::query!(
             "INSERT INTO images (image_identifier, image_format, expires_at) VALUES ($1, $2, $3)",
             image_identifier,
             image_format.to_str(),
-            expires_at
+            image_eol.expect("TODO: OPTIONAL TTL NOT YET IMPLEMENTED")
         )
         .execute(&self.pool)
         .await?;
@@ -218,12 +224,25 @@ impl Database {
         .await?
         .is_some())
     }
+
+    fn determine_eol(requested : Option<Duration>, max : Option<Duration>) -> Option<DateTime<Utc>>{
+        if requested.is_none(){
+            max.map(|x| Utc::now() + x)
+        }else if let (Some(requested), Some(max)) = (requested, max){
+            if requested > max{
+                Some(Utc::now() + max)
+            }else{
+                Some(Utc::now() + requested)
+            }
+        }else{
+            requested.map(|x| Utc::now() + x)
+        }
+    }
 }
 
 struct DatabaseReceiver();
 
 impl DatabaseReceiver {
-    //USE ARCS HERE
     async fn compute_message(
         mut rx: Receiver<DatabaseMessage>,
         pool: PgPool,
