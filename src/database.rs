@@ -1,9 +1,8 @@
 use std::{
     error::Error,
-    fmt::{Display, Write}, // Add this line to bring the Write trait into scope
+    fmt::Write, // Add this line to bring the Write trait into scope
     io::{BufRead, Read, Seek},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use chrono::{DateTime, Utc};
