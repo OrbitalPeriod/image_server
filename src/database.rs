@@ -1,13 +1,10 @@
 use std::{
-    error::Error,
-    fmt::Write, // Add this line to bring the Write trait into scope
-    io::{BufRead, Read, Seek},
-    path::{Path, PathBuf},
+    error::Error, fmt::Write, io::{BufRead, Read, Seek}, ops::Deref, path::{Path, PathBuf}, sync::Arc
 };
 
 use chrono::{DateTime, Duration, Utc};
 use derive_more::derive::Display;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 
 use crate::image_format::ImageFormat;
 use image::ImageReader;
@@ -32,6 +29,7 @@ pub enum SaveImageError {
 
 impl std::error::Error for SaveImageError {}
 
+#[derive(Debug)]
 pub struct Database {
     pool: PgPool,
     image_location: PathBuf,
@@ -122,13 +120,16 @@ impl Database {
         Ok(file_identifier)
     }
 
+    #[instrument]
     pub async fn save_raw_image(
         &self,
-        data: Vec<u8>,
+        data: Box<[u8]>,
         image_identifier: Uuid,
         image_format: ImageFormat,
         api_ttl: Option<Duration>,
     ) -> Result<(), sqlx::Error> {
+        let data = Arc::new(data);
+
         let image_eol = Self::determine_eol(api_ttl, self.image_ttl_allowed);
 
         let file_path = ImagePath::new(&self.image_location, &image_identifier, image_format);
@@ -142,8 +143,9 @@ impl Database {
         .await?;
 
         let transmitter = self.transmitter.clone();
+        let data = Arc::clone(&data);
         tokio::spawn(async move {
-            if let Err(e) = tokio::fs::write(file_path, data.as_slice()).await {
+            if let Err(e) = tokio::fs::write(file_path, &*data).await {
                 warn!("Could not save raw image: {image_identifier} because : {e:?}")
             }
             transmitter
@@ -155,6 +157,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument]
     pub async fn get_image_location(
         &self,
         file_identifier: &Uuid,
@@ -243,6 +246,7 @@ impl Database {
 struct DatabaseReceiver();
 
 impl DatabaseReceiver {
+    #[instrument]
     async fn compute_message(
         mut rx: Receiver<DatabaseMessage>,
         pool: PgPool,
@@ -260,6 +264,7 @@ impl DatabaseReceiver {
         }
     }
 
+    #[instrument]
     async fn image_computed(image_id: Uuid, file_format: ImageFormat, pool: PgPool) {
         let _ = sqlx::query!(
             "UPDATE images SET computed=true WHERE image_identifier=$1 AND image_format=$2",
@@ -271,6 +276,7 @@ impl DatabaseReceiver {
         .expect("Thread could not send query to sqlx");
     }
 
+    #[instrument]
     async fn clean_expired(pool: PgPool, image_folder: PathBuf) {
         debug!("Deleting expired images");
         let expired = sqlx::query!(

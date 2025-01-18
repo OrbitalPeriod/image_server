@@ -15,7 +15,7 @@ use chrono::Duration;
 use image::ImageReader;
 use serde::{de, Deserialize, Deserializer};
 use std::{io::Cursor, str::FromStr, sync::Arc};
-use tracing::{info, warn};
+use tracing::{info, info_span, warn};
 use uuid::Uuid;
 
 use crate::{database::Database, transcode::TranscodeTarget};
@@ -151,6 +151,9 @@ async fn serve_image(
         Err(_) => return build_response(StatusCode::BAD_REQUEST, "Invalid image id".into()),
     };
 
+    let span = info_span!("serve_image", %uuid);
+    let _guard = span.enter();
+
     let image = match transcode::get_image(uuid, query.into(), &state.database, None).await {
         Ok(image) => image,
         Err(TranscoderError::ImageError(e)) => {
@@ -186,7 +189,7 @@ async fn serve_image(
         .unwrap()
 }
 
-fn build_response(status: StatusCode, message: String) -> Response<axum::body::Body> {
+fn build_response(status: StatusCode, message: &'static str) -> Response<axum::body::Body> {
     let body = axum::body::Body::from(Bytes::from(message));
     Response::builder().status(status).body(body).unwrap()
 }

@@ -8,8 +8,8 @@ use std::{error::Error, net::SocketAddr, path::PathBuf};
 
 mod api;
 pub mod database;
-mod transcode;
 mod image_format;
+mod transcode;
 
 pub struct Config {
     pub max_image_width: Option<u32>,
@@ -18,8 +18,8 @@ pub struct Config {
     pub max_memory_usage: Option<u32>,
     pub backend_port: u16,
     pub database_url: String,
-    pub image_path : PathBuf,
-    pub image_ttl : Option<Duration>,
+    pub image_path: PathBuf,
+    pub image_ttl: Option<Duration>,
 }
 
 pub async fn run(config: Config) -> Result<(), Box<dyn Error>> {
@@ -39,7 +39,10 @@ async fn get_database(config: &Config) -> Result<Database, Box<dyn Error>> {
 fn get_router(config: &Config, database: Database) -> Router {
     let body_limit = match config.max_image_size {
         Some(limit) => DefaultBodyLimit::max(limit),
-        None => DefaultBodyLimit::disable(),
+        None => {
+            info!("No max image size set, assuming default");
+            DefaultBodyLimit::disable()
+        }
     };
 
     Router::new()
@@ -47,6 +50,7 @@ fn get_router(config: &Config, database: Database) -> Router {
         .route("/", get(index))
         .layer(TraceLayer::new_for_http())
 }
+
 async fn get_listener(config: &Config) -> tokio::io::Result<tokio::net::TcpListener> {
     let address = SocketAddr::from(([127, 0, 0, 1], config.backend_port));
 

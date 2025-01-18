@@ -1,9 +1,10 @@
-use std::io::Cursor;
+use std::{io::Cursor};
 
 use crate::database::Database;
 use crate::image_format::ImageFormat;
 use chrono::{Duration, Utc};
 use image::{DynamicImage, ImageError, ImageReader};
+use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -21,6 +22,7 @@ pub struct TranscodeTarget {
     pub image_height: Option<u32>,
 }
 
+#[instrument]
 pub async fn transcode(
     image: DynamicImage,
     settings: TranscodeTarget,
@@ -51,12 +53,13 @@ pub async fn transcode(
     .expect("Could not join threads")
 }
 
+#[instrument]
 pub async fn get_image(
     image_id: Uuid,
     settings: TranscodeTarget,
     database: &Database,
     ttl : Option<Duration>
-) -> Result<Vec<u8>, TranscoderError> {
+) -> Result<Box<[u8]>, TranscoderError> {
     let database_result = database
         .get_image_location(&image_id, settings.image_format.unwrap_or_default(), &Utc::now())
         .await;
@@ -65,6 +68,7 @@ pub async fn get_image(
             if settings.image_width.is_none() && settings.image_height.is_none() {
                 tokio::fs::read(image_path)
                     .await
+                    .map(|image| image.into_boxed_slice())
                     .map_err(|x| TranscoderError::InternalServerError(Box::new(x)))
             } else {
                 let image = tokio::task::spawn_blocking(move || {
@@ -78,7 +82,7 @@ pub async fn get_image(
 
                 transcode(image, settings)
                     .await
-                    .map_err(TranscoderError::ImageError)
+                    .map_err(TranscoderError::ImageError).map(Box::from)
             }
         }
         Err(crate::database::GetImageError::NotComputed) => Err(TranscoderError::NotComputed),
@@ -86,14 +90,14 @@ pub async fn get_image(
             let wrong_format_image = tokio::task::spawn_blocking(move || {
                 let mut imagereader = ImageReader::open(image_path).unwrap();
                 imagereader.no_limits();
-                imagereader.decode().unwrap()
+                imagereader.decode()
             })
             .await
-            .unwrap();
+            .expect("could not join threads").map_err(|err |TranscoderError::InternalServerError(Box::new(err)))?;
 
             let data = transcode(wrong_format_image, settings)
                 .await
-                .map_err(TranscoderError::ImageError)?;
+                .map_err(TranscoderError::ImageError)?.into_boxed_slice();
             database
                 .save_raw_image(
                     data.clone(),
