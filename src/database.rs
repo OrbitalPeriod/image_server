@@ -4,7 +4,7 @@ use std::{
 
 use chrono::{DateTime, Duration, Utc};
 use derive_more::derive::Display;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument, span, trace_span, warn};
 
 use crate::image_format::ImageFormat;
 use image::ImageReader;
@@ -43,8 +43,9 @@ enum DatabaseMessage {
 }
 
 impl Database {
+    #[instrument]
     pub async fn new(config: &Config) -> Result<Database, Box<dyn Error>> {
-        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let (transmitter, rx) = tokio::sync::mpsc::channel(1024);
         let pool = PgPoolOptions::new().connect(&config.database_url).await?;
         let receiver_pool = pool.clone();
         let image_path = config.image_path.clone();
@@ -57,11 +58,12 @@ impl Database {
         Ok(Database {
             pool,
             image_location: config.image_path.clone(),
-            transmitter: tx,
+            transmitter,
             image_ttl_allowed: config.image_ttl
         })
     }
 
+    #[instrument(skip(imagereader))]
     pub async fn save_image<R>(
         &self,
         imagereader: ImageReader<R>,
@@ -218,6 +220,7 @@ impl Database {
         }
     }
 
+    #[instrument]
     async fn file_exists(&self, image_identifier: &Uuid) -> Result<bool, sqlx::Error> {
         Ok(sqlx::query!(
             "SELECT * FROM images WHERE image_identifier=$1",

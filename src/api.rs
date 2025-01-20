@@ -14,8 +14,8 @@ use axum::{
 use chrono::Duration;
 use image::ImageReader;
 use serde::{de, Deserialize, Deserializer};
-use std::{io::Cursor, str::FromStr, sync::Arc};
-use tracing::{info, info_span, warn};
+use std::{io::{BufReader, Cursor}, str::FromStr, sync::Arc};
+use tracing::{info, info_span, warn, trace};
 use uuid::Uuid;
 
 use crate::{database::Database, transcode::TranscodeTarget};
@@ -50,6 +50,7 @@ async fn upload(
 ) -> Html<String> {
     let ttl = uploadsettings.ttl_secs.map(Duration::seconds);
 
+    trace!("uploading image");
     let mut file_data: Vec<u8> = Vec::new();
     while let Some(field) = multipart
         .next_field()
@@ -61,8 +62,9 @@ async fn upload(
     }
 
     let file_data = file_data;
+    trace!("done uploading image");
 
-    let mut reader = ImageReader::new(Cursor::new(file_data));
+    let mut reader = ImageReader::new(BufReader::new(Cursor::new(file_data)));
     reader.no_limits();
     let image_data = reader.with_guessed_format().unwrap();
     match image_data.format() {

@@ -1,5 +1,4 @@
 - Make the database deal with optional expiry dates
-- Add TTL you can add to an API request
 - Cache resized images (embed size information in ImageLocationPath)
 - Make max image width, height, and size actually do something
 - make max_memory_usage actually do something
@@ -16,3 +15,4 @@
 - Save other formats of image if they are created, and integrate this with database
 - Add TTL to images
 - Make TTL a variable i can change
+- Add TTL you can add to an API request

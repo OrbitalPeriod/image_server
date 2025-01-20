@@ -11,6 +11,7 @@ pub mod database;
 mod image_format;
 mod transcode;
 
+#[derive(Debug)]
 pub struct Config {
     pub max_image_width: Option<u32>,
     pub max_image_height: Option<u32>,
